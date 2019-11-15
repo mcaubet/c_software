@@ -1,7 +1,8 @@
 #include <stdio.h>
 #include <omp.h>
 #include <mpi.h>
-#include "getcpuid.h"
+#include <sched.h>
+//#include "getcpuid.h"
 
 int main(int argc, char* argv[]) {
   int numprocs, rank, namelen;
@@ -17,9 +18,9 @@ int main(int argc, char* argv[]) {
   {
     np = omp_get_num_threads();
     iam = omp_get_thread_num();
-    int cpu_id = get_cpu_id();
-    printf("Hello from thread %d out of %d from process %d out of %d on %s, cpu_id %d\n",
-           iam, np, rank, numprocs, processor_name, cpu_id);
+    int cpu_id = sched_getcpu();
+    printf("Hello from %s: thread_id(%d) #threads(%d) rank_id(%d) #ranks(%d) cpu_id(%d)\n",
+           processor_name, iam, np, rank, numprocs, cpu_id);
   }
 
   MPI_Finalize();
