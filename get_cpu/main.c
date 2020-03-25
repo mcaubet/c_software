@@ -1,3 +1,4 @@
+#define _GNU_SOURCE  
 #include <stdio.h>
 #include <omp.h>
 #include <mpi.h>
@@ -16,11 +17,13 @@ int main(int argc, char* argv[]) {
 
   #pragma omp parallel default(shared) private(iam, np)
   {
-    np = omp_get_num_threads();
-    iam = omp_get_thread_num();
-    int cpu_id = sched_getcpu();
+    // np = omp_get_num_threads();
+    // iam = omp_get_thread_num();
+    // int cpu_id = sched_getcpu();
+    // printf("Hello from %s: thread_id(%d) #threads(%d) rank_id(%d) #ranks(%d) cpu_id(%d)\n",
+    //        processor_name, iam, np, rank, numprocs, cpu_id);
     printf("Hello from %s: thread_id(%d) #threads(%d) rank_id(%d) #ranks(%d) cpu_id(%d)\n",
-           processor_name, iam, np, rank, numprocs, cpu_id);
+           processor_name, omp_get_thread_num()+1, omp_get_num_threads(), rank, numprocs, sched_getcpu());
   }
 
   MPI_Finalize();

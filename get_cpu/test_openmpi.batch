@@ -1,0 +1,59 @@
+#!/bin/bash
+#SBATCH --clusters=merlin6
+#SBATCH --job-name=get_cpu
+#SBATCH --partition=hourly           # Specify 'general' or 'daily' or 'hourly': partition=<general|daily|hourly> 
+#SBATCH --time=00:15:00              # Strictly recommended when using 'general': partition: time=<D-HH:MM:SS>
+#SBATCH --output=logs/get_cpu-%j.out # Generate custom output file
+#SBATCH --error=logs/get_cpu-%j.err  # Generate custom error  file
+#SBATCH --ntasks=10                  # Uncomment and specify #nodes to use  
+#SBATCH --ntasks-per-core=1          # Request  the  maximum  'ntasks' be invoked on each core.
+#SBATCH --hint=nomultithread         # Enable hyper-threading (multithread) or disable (nomultithread)
+#SBATCH --cpus-per-task=1            # Uncomment and specify the number of cores per task
+
+###################################################
+# Load the environment modules for this job (the order may be important):
+
+EXE="/data/user/caubet_m/c_software/get_cpu/get_cpu"
+SRUN=yes
+
+mkdir -p testmpi
+rm -f testmpi/*
+
+module use unstable
+
+for module in $(module search openmpi 2>&1  | grep slurm | awk '{print $1";"$4}')
+do
+  compiler_module=$(echo ${module} | awk -F';' '{print $2}')
+  openmpi_module=$(echo ${module} | awk -F';' '{print $1}')
+
+  compiler=$(echo ${compiler_module} | sed 's/\//V/g')
+  openmpi=$(echo ${openmpi_module} | sed 's/\//V/g')
+
+  touch testmpi/${openmpi}.${compiler}.log 
+
+  module purge
+  module load ${compiler_module} ${openmpi_module}
+  module list 2>&1 >> testmpi/${openmpi}.${compiler}.log
+  
+  echo " " >> testmpi/${openmpi}.${compiler}.log
+  # make >> testmpi/${openmpi}.${compiler}.log
+  echo " " >> testmpi/${openmpi}.${compiler}.log
+
+  module list
+  if [ "${SRUN}" == "yes" ]
+  then
+    echo "# srun"
+    echo "# srun" >> testmpi/${openmpi}.${compiler}.log
+    srun --cpu-bind=threads,verbose $EXE >> testmpi/${openmpi}.${compiler}.log
+  else
+    echo "# mpirun"
+    echo "# mpirun" >> testmpi/${openmpi}.${compiler}.log
+    ##############################################################################################################################################
+    # GOOD MPI SETUP
+    export MPIRUN_OPTIONS="--bind-to core -report-bindings -mca pml ucx -x UCX_NET_DEVICES=mlx5_0:1 -x UCX_LOG_LEVEL=data -x UCX_LOG_FILE=UCX.log"
+    export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+    export OMP_PROC_BIND=true
+    mpirun -np $SLURM_NTASKS $MPIRUN_OPTIONS $EXE
+    ##############################################################################################################################################
+  fi
+done
