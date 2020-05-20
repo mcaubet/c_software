@@ -1,0 +1,74 @@
+#!/bin/bash
+#SBATCH --clusters=merlin6
+#SBATCH --job-name=get_cpu
+#SBATCH --partition=hourly           # Specify 'general' or 'daily' or 'hourly': partition=<general|daily|hourly> 
+#SBATCH --time=00:15:00              # Strictly recommended when using 'general': partition: time=<D-HH:MM:SS>
+#SBATCH --output=logs/get_cpu-%j.out # Generate custom output file
+#SBATCH --error=logs/get_cpu-%j.err  # Generate custom error  file
+#SBATCH --ntasks=10                  # Uncomment and specify #nodes to use  
+#SBATCH --ntasks-per-core=1          # Request  the  maximum  'ntasks' be invoked on each core.
+#SBATCH --hint=nomultithread         # Enable hyper-threading (multithread) or disable (nomultithread)
+#SBATCH --cpus-per-task=1            # Uncomment and specify the number of cores per task
+
+###################################################
+# Load the environment modules for this job (the order may be important):
+
+# export PMODULES_VERSION=1.0.0rc5
+# source /opt/psi/config/profile.bash
+
+module purge
+
+impi=no
+
+if [ "$impi" == "yes" ]
+then
+  echo "Loading Intel MPI"
+  module load intel/18.4 impi/18.4
+else
+  echo "Loading Open MPI"
+  module use unstable
+  # module load intel/18.4 openmpi/3.1.5_merlin6
+  # module load gcc/9.2.0  openmpi/3.1.5_merlin6
+  module load gcc/7.4.0  openmpi/3.1.5_slurm
+fi
+module list
+
+EXE="/data/user/caubet_m/c_software/get_cpu/get_cpu"
+
+##############################################################################################################################################
+# GOOD MPI SETUP
+export MPIRUN_OPTIONS="--bind-to core -report-bindings -mca pml ucx -x UCX_NET_DEVICES=mlx5_0:1 -x UCX_LOG_LEVEL=data -x UCX_LOG_FILE=UCX.log"
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export OMP_PROC_BIND=true
+##############################################################################################################################################
+
+# The MPI command to run:
+#### export MPIRUN_OPTIONS="--bind-to none -report-bindings -mca pml ucx -x UCX_NET_DEVICES=mlx4_0:1 -x UCX_LOG_LEVEL=data -x UCX_LOG_FILE=UCX.log"
+#### export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+#### export OMP_PROC_BIND=true
+## export MPIRUN_OPTIONS="--bind-to core --rank-by hwthread --map-by hwthread -report-bindings -mca pml ucx -x UCX_NET_DEVICES=mlx5_0:1 -x UCX_LOG_LEVEL=data -x UCX_LOG_FILE=UCX.log"
+export MPIRUN_OPTIONS="--bind-to core -report-bindings -mca pml ucx -x UCX_NET_DEVICES=mlx5_0:1 -x UCX_LOG_LEVEL=data -x UCX_LOG_FILE=UCX.log"
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export OMP_PROC_BIND=false
+# export KMP_AFFINITY="verbose,none"
+# export NUM_CORES=$SLURM_NTASKS*$SLURM_CPUS_PER_TASK
+# echo "${EXECUTABLE} running on ${NUM_CORES} cores with ${SLURM_NTASKS} MPI-tasks and ${OMP_NUM_THREADS} threads"
+
+# echo "#LDD $(which mpirun)"
+# ldd $(which mpirun)
+# echo "#LDD $EXE"
+# ldd $EXE
+
+# mpirun -np $SLURM_NTASKS $MPIRUN_OPTIONS $EXE
+mpirun -np $SLURM_NTASKS $MPIRUN_OPTIONS $EXE
+#mpirun -np 2 -mca pml ucx -x UCX_NET_DEVICES=mlx5_0:1 
+# export SLURM_PMIX_DIRECT_CONN_UCX=true
+# SLURM_PMIX_DIRECT_CONN=true
+# OMPI_MCA_pml=ucx
+# OMPI_MCA_btl='^vader,tcp,openib'
+# UCX_NET_DEVICES='mlx4_0:1'
+# SLURM_PMIX_DIRECT_CONN_EARLY=false
+# export UCX_TLS=rc
+# export UCX_TLS=tcp,self,sm
+# srun --cpu-bind=thread $EXE
+srun $EXE
