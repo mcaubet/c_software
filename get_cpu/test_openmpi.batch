@@ -1,27 +1,34 @@
 #!/bin/bash
 #SBATCH --clusters=merlin6
 #SBATCH --job-name=get_cpu
-#SBATCH --partition=gfa-asa          # Specify 'general' or 'daily' or 'hourly': partition=<general|daily|hourly> 
-#SBATCH --account=gfa-asa
-#SBATCH --time=00:15:00              # Strictly recommended when using 'general': partition: time=<D-HH:MM:SS>
-#SBATCH --output=logs/get_cpu-%j.out # Generate custom output file
-#SBATCH --error=logs/get_cpu-%j.err  # Generate custom error  file
-#SBATCH --ntasks=2                   # Uncomment and specify #nodes to use  
-#SBATCH --hint=nomultithread         # Enable hyper-threading (multithread) or disable (nomultithread)
-#SBATCH --cpus-per-task=10           # Uncomment and specify the number of cores per task
+#SBATCH --partition=cpu-maint
+#SBATCH --account=merlin
+#SBATCH --time=00:15:00
+#SBATCH --output=/data/user/caubet_m/tmp/get_cpu/logs/get_cpu-%j.out
+#SBATCH --error=/data/user/caubet_m/tmp/get_cpu/logs/get_cpu-%j.err
+#SBATCH --ntasks=2
+#SBATCH --hint=nomultithread
+#SBATCH --cpus-per-task=10
 
-###################################################
-# Load the environment modules for this job (the order may be important):
+export TMPDIR=/data/user/caubet_m/tmp
+export LOGSDIR=${TMPDIR}/get_cpu/logs
+export OUTDIR=${TMPDIR}/get_cpu/testmpi
 
-SRUN=no
-OPENMPI_VERSION=4.0.3_slurm
+SRUN=yes              # Recommended Default: yes
+PMODULES_UNSTABLE=no  # Recommended Default: no
+DELETE_OUTDIR=yes     # Recommended Default: yes
+DELETE_LOGSDIR=no     # Recommended Default: no
+
+OPENMPI_VERSION=4.0.4_slurm
 
 EXE="/data/user/caubet_m/c_software/get_cpu/get_cpu"
 
-mkdir -p testmpi
-rm -f testmpi/*
+# Optional delete temporary directories
+if [ "${DELETE_OUTDIR}" == "yes" ]; then mkdir -p ${OUTDIR}; fi
+if [ "${DELETE_LOGSDIR}" == "yes" ]; then mkdir -p ${LOGSDIR}; fi
 
-module use unstable
+# Optional load unstable software repository
+if [ "${PMODULES_UNSTABLE}" == "yes" ]; then module use unstable; fi
 
 for module in $(module search openmpi 2>&1  | grep "$OPENMPI_VERSION" | awk '{print $1";"$4}')
 do
@@ -31,25 +38,25 @@ do
   compiler=$(echo ${compiler_module} | sed 's/\//V/g')
   openmpi=$(echo ${openmpi_module} | sed 's/\//V/g')
 
-  touch testmpi/${openmpi}.${compiler}.log 
+  touch ${OUTDIR}/${openmpi}.${compiler}.log 
 
   module purge
   module load ${compiler_module} ${openmpi_module}
-  module list 2>&1 >> testmpi/${openmpi}.${compiler}.log
+  module list 2>&1 >> ${OUTDIR}/${openmpi}.${compiler}.log
   
-  echo " " >> testmpi/${openmpi}.${compiler}.log
-  make     >> testmpi/${openmpi}.${compiler}.log
-  echo " " >> testmpi/${openmpi}.${compiler}.log
+  echo " " >> ${OUTDIR}/${openmpi}.${compiler}.log
+  make     >> ${OUTDIR}/${openmpi}.${compiler}.log
+  echo " " >> ${OUTDIR}/${openmpi}.${compiler}.log
 
   module list
   if [ "${SRUN}" == "yes" ]
   then
     echo "# srun"
-    echo "# srun" >> testmpi/${openmpi}.${compiler}.log
-    srun --cpu-bind=threads,verbose $EXE >> testmpi/${openmpi}.${compiler}.log
+    echo "# srun" >> ${OUTDIR}/${openmpi}.${compiler}.log
+    srun --cpu-bind=threads,verbose $EXE >> ${OUTDIR}/${openmpi}.${compiler}.log
   else
     echo "# mpirun"
-    echo "# mpirun" >> testmpi/${openmpi}.${compiler}.log
+    echo "# mpirun" >> ${OUTDIR}/${openmpi}.${compiler}.log
     ##############################################################################################################################################
     # GOOD MPI SETUP
     # export MPIRUN_OPTIONS="--bind-to core --map-by socket:PE=$SLURM_CPUS_PER_TASK --rank-by hwthread -report-bindings -mca pml ucx --mca btl ^vader,tcp,openib,uct -x UCX_NET_DEVICES=mlx5_0:1 -x UCX_LOG_LEVEL=data -x UCX_LOG_FILE=UCX.log"
