@@ -1,0 +1,36 @@
+#!/bin/bash -l 
+#SBATCH --job-name=testmpi
+#SBATCH --error=all_gather.err
+#SBATCH --output=all_gather.out
+#SBATCH --time=00:02:00
+#SBATCH --gpus=2
+#SBATCH --nodes=1
+#SBATCH --ntasks=2
+#SBATCH --ntasks-per-node=2
+#SBATCH --gpus-per-task=1
+#SBATCH --account=merlin
+#SBATCH --exclusive
+#SBATCH --partition=gpu-short
+#SBATCH --cpus-per-gpu=4
+
+module load gcc/8.4.0 cuda/11.1.0 openmpi/4.0.5_slurm
+
+export OMPI_MCA_pml="ucx"
+export OMPI_MCA_btl="^vader,tcp,openib,uct"
+export UCX_TLS=rc,cuda,shm
+export UCX_LOG_LEVEL=TRACE
+# export UCX_NET_DEVICES=mlx5_0:1
+# export UCX_LOG_FILE=UCX-$SLURM_JOB_ID-$SLURM_NODEID.log
+# export UCX_MEMTYPE_CACHE=n
+
+mpicxx -g all_gather.cpp -o all_gather -I/opt/psi/Programming/cuda/11.1.0/lib64 -L/opt/psi/Programming/cuda/11.1.0/lib64 -lcudart
+
+echo "# ldd $(which mpirun)"
+ldd $(which mpirun)
+echo
+
+echo "# ldd ./all_gather"
+ldd ./all_gather
+echo
+
+mpirun ./all_gather
