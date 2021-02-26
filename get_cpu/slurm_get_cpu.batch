@@ -33,7 +33,7 @@ else
 fi
 module list
 
-EXE="/data/user/caubet_m/c_software/get_cpu/get_cpu"
+EXE="/data/user/caubet_m/Software/ADMIN/c_software/get_cpu/get_cpu"
 
 ##############################################################################################################################################
 # GOOD MPI SETUP

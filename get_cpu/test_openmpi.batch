@@ -21,7 +21,7 @@ DELETE_LOGSDIR=no     # Recommended Default: no
 
 OPENMPI_VERSION=4.0.4_slurm
 
-EXE="/data/user/caubet_m/c_software/get_cpu/get_cpu"
+EXE="/data/user/caubet_m/Software/ADMIN/c_software/get_cpu/get_cpu"
 
 # Optional delete temporary directories
 if [ "${DELETE_OUTDIR}" == "yes" ]; then mkdir -p ${OUTDIR}; fi
