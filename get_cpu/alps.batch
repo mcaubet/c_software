@@ -16,7 +16,7 @@ export TMPDIR=/data/user/caubet_m/tmp
 export LOGSDIR=${TMPDIR}/get_cpu/logs
 export OUTDIR=${TMPDIR}/get_cpu/testmpi
 
-SRUN=no              # Recommended Default: yes
+SRUN=yes              # Recommended Default: yes
 PMODULES_UNSTABLE=no  # Recommended Default: no
 DELETE_OUTDIR=yes     # Recommended Default: yes
 DELETE_LOGSDIR=no     # Recommended Default: no
@@ -53,13 +53,13 @@ then
   export OMPI_MCA_mtl_ofi_verbose=3
 
   # MPICH
-  export MPIR_CVAR_DEBUG_SUMMARY=1
-  export MPICH_DBG_LEVEL=VERBOSE
-  export MPICH_DBG_CLASS=ALL
-  export MPIR_CVAR_OFI_USE_PROVIDER=cxi
+  # export MPIR_CVAR_DEBUG_SUMMARY=1
+  # export MPICH_DBG_LEVEL=VERBOSE
+  # export MPICH_DBG_CLASS=ALL
+  # export MPIR_CVAR_OFI_USE_PROVIDER=cxi
   # srun --mpi=cray_shasta --cpu-bind=verbose $EXE # >> ${OUTDIR}/${openmpi}.${compiler}.log
   
-  srun -vvvvvv --mpi=pmix --cpu-bind=verbose $EXE # >> ${OUTDIR}/${openmpi}.${compiler}.log
+  srun -vvvvvv --mpi=pmi2 --cpu-bind=verbose $EXE # >> ${OUTDIR}/${openmpi}.${compiler}.log
 else
   # echo "# mpirun"
   # echo "# mpirun" >> ${OUTDIR}/${openmpi}.${compiler}.log
@@ -89,6 +89,6 @@ else
   # export MPICH_DBG_FILENAME=dbg.log
   export MPIR_CVAR_OFI_USE_PROVIDER=^cxi
   export MPIR_CVAR_OFI_DUMP_PROVIDERS=true
-  mpiexec $EXE # >> testmpi/${openmpi}.${compiler}.log
+  mpirun $EXE # >> testmpi/${openmpi}.${compiler}.log
   ##############################################################################################################################################
 fi
