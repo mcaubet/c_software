@@ -1,48 +1,56 @@
 #!/usr/bin/env bash
-set -u
-set -o pipefail
+set -euo pipefail
 
-echo "host=$(hostname)"
-echo "jobid=${SLURM_JOB_ID:-}"
-echo "stepid=${SLURM_STEP_ID:-}"
-echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
-echo "SLURM_STEP_GPUS=${SLURM_STEP_GPUS:-<unset>}"
-echo
+declare -A CXI_BY_NUMA
+declare -A GPU_NUMA
 
-echo "== CXI devices =="
+# Build NUMA -> CXI map
 for d in /sys/class/cxi/cxi*; do
+    [[ -e "$d" ]] || continue
     cxi=$(basename "$d")
-    numa=$(cat "$d/device/numa_node" 2>/dev/null || echo -1)
-    pci=$(basename "$(readlink -f "$d/device")")
-    printf "%s numa=%s pci=%s\n" "$cxi" "$numa" "$pci"
+    numa=$(< "$d/device/numa_node")
+    [[ "$numa" =~ ^[0-9]+$ ]] || continue
+    CXI_BY_NUMA["$numa"]="$cxi"
 done
-echo
 
-echo "== GPU topology =="
-nvidia-smi topo -m
-echo
+# Read GPU -> NUMA Affinity from nvidia-smi topo -m
+while IFS= read -r line; do
+    [[ "$line" =~ ^GPU[0-9]+[[:space:]] ]] || continue
+    read -r -a fields <<< "$line"
+    gpu="${fields[0]#GPU}"
 
-echo "== GPU -> CXI expected mapping from NUMA Affinity =="
-nvidia-smi topo -m | awk '
-BEGIN {
-    while (("find /sys/class/cxi -maxdepth 1 -type l -name \"cxi*\" | sort" | getline path) > 0) {
-        cmd = "basename " path
-        cmd | getline cxi
-        close(cmd)
+    nfields="${#fields[@]}"
+    (( nfields >= 3 )) || continue
 
-        cmd = "cat " path "/device/numa_node 2>/dev/null"
-        cmd | getline numa
-        close(cmd)
+    # Penultimate field = NUMA Affinity
+    numa="${fields[$((nfields - 2))]}"
+    [[ "$numa" =~ ^[0-9]+$ ]] || continue
 
-        cxi_by_numa[numa] = cxi
-    }
-}
-/^GPU[0-9]+[[:space:]]/ {
-    gpu=$1
-    numa=$(NF-1)   # NUMA Affinity column
-    gsub(/[^0-9]/, "", numa)
-    if (numa != "" && (numa in cxi_by_numa))
-        printf "%s -> numa %s -> %s\n", gpu, numa, cxi_by_numa[numa]
-    else
-        printf "%s -> numa %s -> no matching cxi found\n", gpu, numa
-}'
+    GPU_NUMA["$gpu"]="$numa"
+done < <(nvidia-smi topo -m)
+
+# Determine which GPUs are visible/reserved for this step
+declare -a gpu_list
+if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+    IFS=',' read -r -a gpu_list <<< "$CUDA_VISIBLE_DEVICES"
+else
+    # Fallback: use all GPUs found in topo output
+    mapfile -t gpu_list < <(printf '%s\n' "${!GPU_NUMA[@]}" | sort -n)
+fi
+
+# Build ordered FI_LNX_PROV_LINKS string
+links=()
+for gpu in "${gpu_list[@]}"; do
+    [[ "$gpu" =~ ^[0-9]+$ ]] || continue
+    numa="${GPU_NUMA[$gpu]:-}"
+    [[ -n "$numa" ]] || continue
+    cxi="${CXI_BY_NUMA[$numa]:-}"
+    [[ -n "$cxi" ]] || continue
+    links+=("shm+cxi:${cxi}")
+done
+
+# Print only the export line
+(
+    IFS='|'
+    printf 'export FI_LNX_PROV_LINKS="%s"\n' "${links[*]}"
+)
