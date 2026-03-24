@@ -51,6 +51,7 @@ then
   export OMPI_MCA_hwloc_base_verbose=debug
   export OMPI_MCA_mtl_base_verbose=debug
   export OMPI_MCA_mtl_ofi_verbose=3
+  export OMPI_MCA_btl_tcp_if_include=hsn0
 
   # MPICH
   # export MPIR_CVAR_DEBUG_SUMMARY=1
@@ -59,7 +60,7 @@ then
   # export MPIR_CVAR_OFI_USE_PROVIDER=cxi
   # srun --mpi=cray_shasta --cpu-bind=verbose $EXE # >> ${OUTDIR}/${openmpi}.${compiler}.log
   
-  srun -vvvvvv --mpi=pmi2 --cpu-bind=verbose $EXE # >> ${OUTDIR}/${openmpi}.${compiler}.log
+  srun -vvvvvv --mpi=pmix --cpu-bind=verbose $EXE # >> ${OUTDIR}/${openmpi}.${compiler}.log
 else
   # echo "# mpirun"
   # echo "# mpirun" >> ${OUTDIR}/${openmpi}.${compiler}.log

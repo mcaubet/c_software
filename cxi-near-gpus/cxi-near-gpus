@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+#
+# cxi-near-gpus
+#
+# Show, for the current Slurm job/step, which visible GPUs were assigned and
+# which CXI interfaces are on the same NUMA node (or otherwise nearest by the
+# limited information available from sysfs).
+#
+# Intended usage:
+#   srun --gpus=N ./cxi-near-gpus
+#   salloc --gpus=N
+#   ./cxi-near-gpus
+#
+# Notes:
+# - This script relies primarily on CUDA_VISIBLE_DEVICES, because that reflects
+#   the GPU devices visible inside the running job step.
+# - It also prints SLURM_JOB_GPUS / SLURM_STEP_GPUS when available, for reference.
+# - It assumes CXI devices are exposed under /sys/class/cxi/cxi*
+# - "closest" is implemented as:
+#     1) exact same NUMA node
+#     2) otherwise, report all CXI devices with their NUMA nodes
+#
+# Exit codes:
+#   0 success
+#   1 generic error
+#
+
+set -u
+set -o pipefail
+
+die() {
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+have_cmd() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# -----------------------------
+# Basic environment information
+# -----------------------------
+echo "== Slurm context =="
+echo "host                : $(hostname)"
+echo "job id              : ${SLURM_JOB_ID:-<unset>}"
+echo "step id             : ${SLURM_STEP_ID:-<unset>}"
+echo "local rank          : ${SLURM_LOCALID:-<unset>}"
+echo "global rank         : ${SLURM_PROCID:-<unset>}"
+echo "SLURM_JOB_GPUS      : ${SLURM_JOB_GPUS:-<unset>}"
+echo "SLURM_STEP_GPUS     : ${SLURM_STEP_GPUS:-<unset>}"
+echo "CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-<unset>}"
+echo
+
+# -----------------------------
+# Current CPU / memory binding
+# -----------------------------
+echo "== Current task locality =="
+grep '^Cpus_allowed_list:' /proc/self/status 2>/dev/null || true
+grep '^Mems_allowed_list:' /proc/self/status 2>/dev/null || true
+if have_cmd numactl; then
+    numactl --show 2>/dev/null | sed 's/^/  /'
+fi
+echo
+
+# -----------------------------
+# Enumerate CXI devices
+# -----------------------------
+declare -a CXI_NAMES=()
+declare -A CXI_NUMA=()
+declare -A CXI_PCI=()
+
+if compgen -G "/sys/class/cxi/cxi*" >/dev/null 2>&1; then
+    while IFS= read -r -d '' d; do
+        name=$(basename "$d")
+        numa=$(cat "$d/device/numa_node" 2>/dev/null || echo -1)
+        pci=$(basename "$(readlink -f "$d/device" 2>/dev/null)" 2>/dev/null || echo "?")
+        CXI_NAMES+=("$name")
+        CXI_NUMA["$name"]="$numa"
+        CXI_PCI["$name"]="$pci"
+    done < <(find /sys/class/cxi -maxdepth 1 -type l -name 'cxi*' -print0 | sort -z)
+else
+    die "No CXI devices found under /sys/class/cxi"
+fi
+
+echo "== CXI inventory =="
+for cxi in "${CXI_NAMES[@]}"; do
+    printf "%-8s numa=%-3s pci=%s\n" \
+        "$cxi" "${CXI_NUMA[$cxi]}" "${CXI_PCI[$cxi]}"
+done
+echo
+
+# -----------------------------
+# Need nvidia-smi for robust GPU resolution
+# -----------------------------
+have_cmd nvidia-smi || die "nvidia-smi not found in PATH"
+
+# Build a table for all host GPUs:
+#   host_index|pci_bus_id
+declare -a HOST_GPU_LINES=()
+while IFS= read -r line; do
+    [[ -n "$line" ]] && HOST_GPU_LINES+=("$line")
+done < <(nvidia-smi --query-gpu=index,pci.bus_id --format=csv,noheader,nounits 2>/dev/null)
+
+[[ ${#HOST_GPU_LINES[@]} -gt 0 ]] || die "Could not query GPUs with nvidia-smi"
+
+# -----------------------------
+# Parse visible GPUs
+# -----------------------------
+if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+    echo "WARNING: CUDA_VISIBLE_DEVICES is not set."
+    echo "The script will fall back to reporting all host GPUs."
+    echo
+    VISIBLE_LIST=""
+else
+    VISIBLE_LIST="${CUDA_VISIBLE_DEVICES}"
+fi
+
+declare -a GPU_HOST_INDEXES=()
+
+if [[ -n "$VISIBLE_LIST" ]]; then
+    IFS=',' read -r -a raw_visible <<< "$VISIBLE_LIST"
+
+    # In a Slurm step with cgroups, visible GPU IDs are often renumbered
+    # relative to the job view, so visible index 0 means "first visible GPU".
+    #
+    # We resolve that by asking nvidia-smi only for visible GPUs, then mapping
+    # visible ordinal -> actual PCI bus ID.
+    declare -a VISIBLE_PCI_LINES=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && VISIBLE_PCI_LINES+=("$line")
+    done < <(nvidia-smi --query-gpu=index,pci.bus_id --format=csv,noheader,nounits 2>/dev/null)
+
+    # If CUDA_VISIBLE_DEVICES is restricting visibility, the nvidia-smi output
+    # as seen inside the step should correspond to the visible set and be
+    # renumbered from 0..N-1.
+    for vis in "${raw_visible[@]}"; do
+        if [[ "$vis" =~ ^[0-9]+$ ]]; then
+            GPU_HOST_INDEXES+=("$vis")
+        else
+            echo "WARNING: unsupported CUDA_VISIBLE_DEVICES token '$vis' - skipping" >&2
+        fi
+    done
+else
+    # No CUDA_VISIBLE_DEVICES: use all host indices
+    for line in "${HOST_GPU_LINES[@]}"; do
+        host_idx="${line%%,*}"
+        host_idx="${host_idx// /}"
+        GPU_HOST_INDEXES+=("$host_idx")
+    done
+fi
+
+# Deduplicate while preserving order
+declare -A _seen_gpu=()
+declare -a GPU_HOST_INDEXES_UNIQ=()
+for g in "${GPU_HOST_INDEXES[@]}"; do
+    if [[ -z "${_seen_gpu[$g]:-}" ]]; then
+        _seen_gpu["$g"]=1
+        GPU_HOST_INDEXES_UNIQ+=("$g")
+    fi
+done
+GPU_HOST_INDEXES=("${GPU_HOST_INDEXES_UNIQ[@]}")
+
+# -----------------------------
+# Print GPU -> NUMA -> CXI mapping
+# -----------------------------
+echo "== Visible GPU to CXI mapping =="
+
+for gpu_idx in "${GPU_HOST_INDEXES[@]}"; do
+    gpu_pci=$(nvidia-smi --id="$gpu_idx" --query-gpu=pci.bus_id --format=csv,noheader,nounits 2>/dev/null | head -n1)
+    gpu_name=$(nvidia-smi --id="$gpu_idx" --query-gpu=name --format=csv,noheader,nounits 2>/dev/null | head -n1)
+
+    [[ -n "$gpu_pci" ]] || {
+        echo "GPU $gpu_idx: unable to resolve PCI bus id"
+        continue
+    }
+
+    # Sysfs path usually wants domain with leading zeros, e.g. 00000000:41:00.0
+    # nvidia-smi usually returns 00000000:41:00.0 already on modern systems.
+    gpu_sysfs="/sys/bus/pci/devices/$gpu_pci"
+    if [[ ! -e "$gpu_sysfs" ]]; then
+        # Try to normalize if needed
+        norm_gpu_pci=$(printf "%s" "$gpu_pci" | sed -E 's/^([0-9a-fA-F]{4}:)/0000\1/')
+        gpu_sysfs="/sys/bus/pci/devices/$norm_gpu_pci"
+    fi
+
+    gpu_numa=$(cat "$gpu_sysfs/numa_node" 2>/dev/null || echo -1)
+
+    echo "GPU $gpu_idx"
+    echo "  name     : ${gpu_name:-?}"
+    echo "  pci      : $gpu_pci"
+    echo "  numa     : $gpu_numa"
+
+    matched=0
+    for cxi in "${CXI_NAMES[@]}"; do
+        if [[ "${CXI_NUMA[$cxi]}" == "$gpu_numa" && "$gpu_numa" != "-1" ]]; then
+            if [[ "$matched" -eq 0 ]]; then
+                echo "  same NUMA CXI:"
+            fi
+            printf "    %-8s pci=%s numa=%s\n" \
+                "$cxi" "${CXI_PCI[$cxi]}" "${CXI_NUMA[$cxi]}"
+            matched=1
+        fi
+    done
+
+    if [[ "$matched" -eq 0 ]]; then
+        echo "  same NUMA CXI: none"
+        echo "  available CXI candidates:"
+        for cxi in "${CXI_NAMES[@]}"; do
+            printf "    %-8s pci=%s numa=%s\n" \
+                "$cxi" "${CXI_PCI[$cxi]}" "${CXI_NUMA[$cxi]}"
+        done
+    fi
+    echo
+done
+
+# -----------------------------
+# Optional topology view
+# -----------------------------
+if have_cmd nvidia-smi; then
+    echo "== nvidia-smi topo -m =="
+    nvidia-smi topo -m 2>/dev/null || true
+    echo
+fi
+
+if have_cmd lstopo-no-graphics; then
+    echo "== lstopo-no-graphics --whole-io =="
+    lstopo-no-graphics --whole-io 2>/dev/null || true
+fi
