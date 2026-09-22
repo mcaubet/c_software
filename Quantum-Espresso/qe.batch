@@ -1,0 +1,91 @@
+#!/bin/bash
+
+#SBATCH --job-name=qe76-gpu-test
+#SBATCH --partition=a100-maint
+#SBATCH --cluster=gmerlin7
+#SBATCH -A admin
+#SBATCH --nodes=1
+#SBATCH --gpus=2
+#SBATCH --ntasks=2
+#SBATCH --ntasks-per-gpu=1
+#SBATCH --cpus-per-task=2
+#SBATCH --time=01:00:00
+#SBATCH --output=qe-gpu-test-%j.out
+#SBATCH --error=qe-gpu-test-%j.err
+
+set -uo pipefail
+
+module purge
+module use unstable
+module use Alps_A100
+module load nvhpc/26.5_cuda_multi mpich/5.0.1 qe/7.6
+
+export OMP_NUM_THREADS=1
+
+QE_SRC=$HOME/Tests/q-e
+
+rm -rf $QE_SRC
+mkdir -p $(dirname $QE_SRC)
+
+git clone --depth=1 -b qe-7.6 https://github.com/QEF/q-e.git $QE_SRC
+
+echo "===== Modules ====="
+module list
+
+echo
+echo "===== QE ====="
+type -a pw.x
+readlink -f "$(command -v pw.x)"
+
+echo
+echo "===== MPI ====="
+type -a mpiexec
+mpiexec --version
+
+echo
+echo "===== GPUs ====="
+nvidia-smi
+
+echo
+echo "===== MPI sanity ====="
+mpiexec -n "${SLURM_NTASKS}" hostname
+
+echo
+echo "===== QE test tree ====="
+cd "${QE_SRC}"
+
+if [[ ! -d test-suite ]]; then
+    echo "ERROR: ${QE_SRC}/test-suite doesn't exist"
+    exit 1
+fi
+
+#
+# Use installed GPU pw.x with pristine QE 7.6 test-suite.
+#
+mkdir -p bin
+rm -f bin/pw.x
+ln -s "$(command -v pw.x)" bin/pw.x
+
+echo
+echo "Testing:"
+ls -l bin/pw.x
+readlink -f bin/pw.x
+
+cd test-suite
+
+echo
+echo "===== QE 7.6 test environment ====="
+cat ENVIRONMENT
+
+echo
+echo "===== Available PW targets ====="
+grep -nE '^[a-zA-Z0-9_-]*run-tests.*pw' Makefile || true
+
+echo
+echo "===== Cleaning ====="
+make clean
+
+echo
+echo "===== Running PW tests ====="
+
+make NPROCS="${SLURM_NTASKS}" run-tests-pw

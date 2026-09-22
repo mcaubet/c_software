@@ -15,7 +15,7 @@ export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export OMP_PLACES=cores
 export OMP_PROC_BIND=close
 
-srun ./mpi_omp_affinity > example1-$SLURM_JOB_ID.out
+srun ./mpi_omp_affinity 256 > example1-$SLURM_JOB_ID.out
 
 # Example 2: Demonstrate missing OpenMP binding
 # - The reported affinity masks may contain many CPUs, and repeated executions 

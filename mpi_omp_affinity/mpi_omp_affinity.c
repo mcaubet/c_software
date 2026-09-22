@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 
 #include <hwloc.h>
+#include <limits.h>
 #include <mpi.h>
 #include <omp.h>
 #include <sched.h>
@@ -104,14 +105,15 @@ static void get_slurm_memory_info(slurm_memory_info_t *info)
 }
 
 static void print_optional_memory_value(
+    FILE *stream,
     const char *label,
     long value,
     const char *unit)
 {
     if (value >= 0) {
-        printf("%-34s %ld %s\n", label, value, unit);
+        fprintf(stream, "%-34s %ld %s\n", label, value, unit);
     } else {
-        printf("%-34s not available\n", label);
+        fprintf(stream, "%-34s not available\n", label);
     }
 }
 
@@ -637,98 +639,202 @@ int main(int argc, char **argv)
         hwloc_bitmap_free(memory_location_nodes);
     }
 
-    MPI_Barrier(MPI_COMM_WORLD);
+    /*
+     * Build one complete report per rank in memory. Only rank 0 writes to
+     * stdout, avoiding interleaving by Slurm's distributed stdout collector.
+     */
+    char *rank_report = NULL;
+    size_t rank_report_size = 0;
+    FILE *rank_stream = open_memstream(&rank_report, &rank_report_size);
 
-    for (int output_rank = 0;
-         output_rank < mpi_size;
-         output_rank++) {
-        if (output_rank == mpi_rank) {
-            printf(
-                "\n"
-                "============================================================\n"
-                "Host:                             %s\n"
-                "MPI rank ID:                      %d\n"
-                "MPI rank ordinal:                 %d of %d\n"
-                "OpenMP threads in rank:           %d\n"
-                "Slurm memory request type:        %s\n",
+    if (rank_stream == NULL) {
+        fprintf(stderr, "MPI rank %d: open_memstream failed\n", mpi_rank);
+        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+    }
 
-                hostname,
-                mpi_rank,
-                mpi_rank + 1,
-                mpi_size,
-                actual_thread_count,
-                slurm_memory.memory_request_type);
+    fprintf(
+        rank_stream,
+        "\n"
+        "============================================================\n"
+        "Host:                             %s\n"
+        "MPI rank ID:                      %d\n"
+        "MPI rank ordinal:                 %d of %d\n"
+        "OpenMP threads in rank:           %d\n"
+        "Slurm memory request type:        %s\n",
+        hostname,
+        mpi_rank,
+        mpi_rank + 1,
+        mpi_size,
+        actual_thread_count,
+        slurm_memory.memory_request_type);
 
-            if (slurm_memory.mem_per_cpu_mb >= 0) {
-                print_optional_memory_value(
-                    "Slurm memory per allocated CPU:",
-                    slurm_memory.mem_per_cpu_mb,
-                    "MiB");
+    if (slurm_memory.mem_per_cpu_mb >= 0) {
+        print_optional_memory_value(
+            rank_stream,
+            "Slurm memory per allocated CPU:",
+            slurm_memory.mem_per_cpu_mb,
+            "MiB");
 
-                print_optional_memory_value(
-                    "Slurm CPUs per task:",
-                    slurm_memory.cpus_per_task,
-                    "");
+        print_optional_memory_value(
+            rank_stream,
+            "Slurm CPUs per task:",
+            slurm_memory.cpus_per_task,
+            "");
 
-                print_optional_memory_value(
-                    "Estimated Slurm memory per task:",
-                    slurm_memory.estimated_mem_per_task_mb,
-                    "MiB");
+        print_optional_memory_value(
+            rank_stream,
+            "Estimated Slurm memory per task:",
+            slurm_memory.estimated_mem_per_task_mb,
+            "MiB");
 
-                print_optional_memory_value(
-                    "Estimated total job memory:",
-                    slurm_memory.estimated_total_job_mem_mb,
-                    "MiB");
-            } else if (slurm_memory.mem_per_node_mb >= 0) {
-                print_optional_memory_value(
-                    "Slurm memory per node:",
-                    slurm_memory.mem_per_node_mb,
-                    "MiB");
+        print_optional_memory_value(
+            rank_stream,
+            "Estimated total job memory:",
+            slurm_memory.estimated_total_job_mem_mb,
+            "MiB");
+    } else if (slurm_memory.mem_per_node_mb >= 0) {
+        print_optional_memory_value(
+            rank_stream,
+            "Slurm memory per node:",
+            slurm_memory.mem_per_node_mb,
+            "MiB");
 
-                printf(
-                    "%-34s cannot be inferred reliably\n",
-                    "Estimated memory per task:");
-            } else if (slurm_memory.mem_per_gpu_mb >= 0) {
-                print_optional_memory_value(
-                    "Slurm memory per allocated GPU:",
-                    slurm_memory.mem_per_gpu_mb,
-                    "MiB");
-            } else {
-                printf(
-                    "%-34s no Slurm memory variable found\n",
-                    "Slurm memory details:");
+        fprintf(
+            rank_stream,
+            "%-34s cannot be inferred reliably\n",
+            "Estimated memory per task:");
+    } else if (slurm_memory.mem_per_gpu_mb >= 0) {
+        print_optional_memory_value(
+            rank_stream,
+            "Slurm memory per allocated GPU:",
+            slurm_memory.mem_per_gpu_mb,
+            "MiB");
+    } else {
+        fprintf(
+            rank_stream,
+            "%-34s no Slurm memory variable found\n",
+            "Slurm memory details:");
+    }
+
+    fprintf(
+        rank_stream,
+        "%-34s %d MiB\n"
+        "%-34s %zu MiB\n"
+        "============================================================\n",
+        "Test allocation per MPI rank:",
+        test_memory_per_rank_mb,
+        "Total test allocation in MPI job:",
+        (size_t)test_memory_per_rank_mb * (size_t)mpi_size);
+
+    for (int thread = 0; thread < actual_thread_count; thread++) {
+        fputs(
+            thread_output + (size_t)thread * OUTPUT_LINE_SIZE,
+            rank_stream);
+
+        if (thread + 1 < actual_thread_count) {
+            fputc('\n', rank_stream);
+        }
+    }
+
+    if (fclose(rank_stream) != 0) {
+        fprintf(stderr, "MPI rank %d: closing report stream failed\n", mpi_rank);
+        free(rank_report);
+        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+    }
+
+    if (rank_report_size > (size_t)INT_MAX) {
+        fprintf(stderr, "MPI rank %d: report is too large for MPI_Gatherv\n", mpi_rank);
+        free(rank_report);
+        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+    }
+
+    int local_report_size = (int)rank_report_size;
+    int *report_sizes = NULL;
+    int *report_displacements = NULL;
+    char *all_reports = NULL;
+
+    if (mpi_rank == 0) {
+        report_sizes = calloc((size_t)mpi_size, sizeof(*report_sizes));
+        report_displacements = calloc(
+            (size_t)mpi_size,
+            sizeof(*report_displacements));
+
+        if (report_sizes == NULL || report_displacements == NULL) {
+            fprintf(stderr, "MPI rank 0: unable to allocate gather metadata\n");
+            free(report_sizes);
+            free(report_displacements);
+            free(rank_report);
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        }
+    }
+
+    MPI_Gather(
+        &local_report_size,
+        1,
+        MPI_INT,
+        report_sizes,
+        1,
+        MPI_INT,
+        0,
+        MPI_COMM_WORLD);
+
+    int total_report_size = 0;
+
+    if (mpi_rank == 0) {
+        for (int rank = 0; rank < mpi_size; rank++) {
+            report_displacements[rank] = total_report_size;
+
+            if (report_sizes[rank] > INT_MAX - total_report_size) {
+                fprintf(stderr, "MPI rank 0: combined report is too large\n");
+                free(report_sizes);
+                free(report_displacements);
+                free(rank_report);
+                MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
             }
 
-            printf(
-                "%-34s %d MiB\n"
-                "%-34s %zu MiB\n"
-                "============================================================\n",
-
-                "Test allocation per MPI rank:",
-                test_memory_per_rank_mb,
-
-                "Total test allocation in MPI job:",
-                (size_t)test_memory_per_rank_mb *
-                    (size_t)mpi_size);
-
-            for (int thread = 0;
-                 thread < actual_thread_count;
-                 thread++) {
-                fputs(
-                    thread_output +
-                        (size_t)thread * OUTPUT_LINE_SIZE,
-                    stdout);
-
-                if (thread + 1 < actual_thread_count) {
-                    putchar('\n');
-                }
-            }
-
-            fflush(stdout);
+            total_report_size += report_sizes[rank];
         }
 
-        MPI_Barrier(MPI_COMM_WORLD);
+        all_reports = malloc((size_t)total_report_size);
+
+        if (all_reports == NULL && total_report_size > 0) {
+            fprintf(stderr, "MPI rank 0: unable to allocate combined report\n");
+            free(report_sizes);
+            free(report_displacements);
+            free(rank_report);
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        }
     }
+
+    MPI_Gatherv(
+        rank_report,
+        local_report_size,
+        MPI_CHAR,
+        all_reports,
+        report_sizes,
+        report_displacements,
+        MPI_CHAR,
+        0,
+        MPI_COMM_WORLD);
+
+    if (mpi_rank == 0 && total_report_size > 0) {
+        size_t written = fwrite(
+            all_reports,
+            1,
+            (size_t)total_report_size,
+            stdout);
+
+        if (written != (size_t)total_report_size) {
+            fprintf(stderr, "MPI rank 0: failed to write complete report\n");
+        }
+
+        fflush(stdout);
+    }
+
+    free(all_reports);
+    free(report_displacements);
+    free(report_sizes);
+    free(rank_report);
 
     free(thread_output);
     free(test_memory);
