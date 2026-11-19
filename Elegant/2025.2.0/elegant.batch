@@ -1,0 +1,31 @@
+#!/bin/bash
+#SBATCH -N 2
+#SBATCH -n 8
+#SBATCH --hint=nomultithread
+#SBATCH --partition=hourly
+
+
+mkdir -p "$HOME/.k5"
+chmod 0700 "$HOME/.k5"
+export KRB5CCNAME="FILE:$(mktemp "$HOME/.k5/krb5cc_${SLURM_JOB_ID:-job}_XXXXXX")"
+
+# Obtain Kerberos credentials using the keytab.
+kinit -kt "$HOME/.k5/krb5.keytab" "$USER@D.PSI.CH"
+
+# Optional: display the credentials and their validity.
+srun -n 2 -N 2 klist
+
+source /etc/profile.d/pmodules.sh
+
+module purge
+module use unstable
+module load gcc/12.3.0 mpich/4.3.1 elegant/2026.4.0
+
+module list
+
+ldd $(which mpiexec)
+
+mpiexec Pelegant pelegant-smoke.ele 2>&1 | tee pelegant-smoke-mpiexec.log
+srun Pelegant pelegant-smoke.ele 2>&1 | tee pelegant-smoke-srun.log
+
+kdestroy
